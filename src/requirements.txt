@@ -1,0 +1,2 @@
+pyvips>=8.10
+Pillow>=8.0
