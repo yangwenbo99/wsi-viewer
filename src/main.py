@@ -17,7 +17,8 @@ def main():
         zoom_out_callback=handler.zoom_out,
         select_callback=handler.zoom_select,
         resize_callback=handler.redraw_image_resize,
-        drag_callback=handler.drag
+        drag_callback=handler.drag,
+        save_crop_callback=handler.save_crop
     )
     viewer.pack(fill=tk.BOTH, expand=True)
     handler.set_gui(viewer)

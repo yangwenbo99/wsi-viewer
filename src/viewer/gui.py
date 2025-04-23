@@ -13,7 +13,8 @@ class SlideViewer(tk.Frame):
         zoom_out_callback: Callable[[Tuple[int, int], float], None],
         select_callback: Callable[[Tuple[int, int, int, int]], None],
         drag_callback: Callable[[Tuple[int, int, int, int]], None],
-        resize_callback: Callable[[], None]
+        resize_callback: Callable[[], None],
+        save_crop_callback: Callable[[Tuple[int, int, int, int], str], None]
     ) -> None:
         super().__init__(master)
         self.master = master
@@ -24,9 +25,12 @@ class SlideViewer(tk.Frame):
             'select': select_callback,
             'resize': resize_callback,
             'drag': drag_callback,
+            'save_crop': save_crop_callback,
         }
         
+        self.stats_var = None
         self._setup_ui()
+
         self.current_image = None
         self.select_mode = False
         self.start_x = None
@@ -34,6 +38,8 @@ class SlideViewer(tk.Frame):
         self.resize_timer = None
         self.scroll_timer = None
         self.drag_timer = None
+        self._crop_pending = False
+
 
         self.wheel_delta = 0  # For zoom in/out using mouse wheel
         
@@ -51,11 +57,25 @@ class SlideViewer(tk.Frame):
                                 command=self._handle_zoom_out)
         self.btn_select = ttk.Button(self.toolbar, text="Select",
                               command=self._handle_select_mode)
+        self.btn_crop = ttk.Button(self.toolbar, text="Crop", 
+                                 command=self._handle_crop)
+
         
         btn_open.pack(pady=5)
         btn_zoom_in.pack(pady=5)
         btn_zoom_out.pack(pady=5)
         self.btn_select.pack(pady=5)
+        self.btn_crop.pack(pady=5)
+        
+        # Add statistics display area
+        self.stats_var = tk.StringVar()
+        self.stats_label = ttk.Label(
+            self.toolbar, 
+            textvariable=self.stats_var,
+            wraplength=90,  # Wrap text to fit toolbar
+            justify=tk.LEFT
+        )
+        self.stats_label.pack(pady=5)
         
         # Create image display area
         self.display_frame = ttk.Frame(self)
@@ -94,6 +114,10 @@ class SlideViewer(tk.Frame):
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor=tk.NW, image=photo)
         self.current_image = photo  # Keep reference to prevent garbage collection
+
+    def show_statistics(self, s: str) -> None:
+        """Display statistics text in the toolbar below the buttons"""
+        self.stats_var.set(s)
         
     def _handle_open(self) -> None:
         from tkinter import filedialog
@@ -111,7 +135,16 @@ class SlideViewer(tk.Frame):
         
     def _handle_select_mode(self) -> None:
         self.select_mode = not self.select_mode
+        self._crop_pending = False
         self.btn_select.config(text="Exit Select" if self.select_mode else "Select")
+
+    def _handle_crop(self) -> None:
+        """Handle crop button click by enabling select mode"""
+        if not self.select_mode:
+            self.select_mode = True
+            self.btn_select.config(text="Exit Select")
+            self._crop_pending = True
+
         
     def _on_mouse_down(self, event) -> None:
         self.start_x = event.x
@@ -141,7 +174,24 @@ class SlideViewer(tk.Frame):
     def _on_mouse_up(self, event) -> None:
         if self.select_mode and self.start_x is not None:
             selection = (self.start_x, self.start_y, event.x, event.y)
-            self.callbacks['select'](selection)
+            if self._crop_pending:
+                from tkinter import filedialog
+                save_path = filedialog.asksaveasfilename(
+                    defaultextension=".tiff",
+                    filetypes=[
+                        ("PNG files", "*.png"),
+                        ("TIFF files", "*.tiff"),
+                        ("JPEG files", "*.jpg"),
+                        ("All files", "*.*")
+                    ]
+                )
+                if save_path:
+                    self.callbacks['save_crop'](selection, save_path)
+                self._crop_pending = False
+                self.select_mode = False
+                self.btn_select.config(text="Select")
+            else:
+                self.callbacks['select'](selection)
         self.start_x = None
         self.start_y = None
 

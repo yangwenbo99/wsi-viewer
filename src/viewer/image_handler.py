@@ -33,6 +33,12 @@ class ImageHandler:
                 self.current_view[3] - self.current_view[1])
         self.current_image = resize_image_box(image, w, h)
         self.gui.show_image(self.current_image)
+        self.gui.show_statistics(
+                f"Image: {self.src_image.width}x{self.src_image.height}\n"
+                f"View: {self.current_view[0]} {self.current_view[1]} {self.current_view[2]} {self.current_view[3]}\n"
+                f"View size: {self.current_view[2] - self.current_view[0]}x{self.current_view[3] - self.current_view[1]}\n"
+                f"Display: {w}x{h}"
+                )
 
     def fix_boundaries(self) -> None:
         '''
@@ -160,6 +166,22 @@ class ImageHandler:
         disp_w, disp_h = self.gui.get_display_area_size()
         # old_src_w, old_src_h = self.current_view[2] - self.current_view[0], self.current_view[3] - self.current_view[1]
         disp_to_select_scale = max(select_width / disp_w, select_height / disp_h)
-        self.scale_image(select_center, 1 / disp_to_select_scale)
+        if disp_to_select_scale > 0:
+            self.scale_image(select_center, 1 / disp_to_select_scale)
 
         # return self.src_image.extract_area(left, top, width, height)
+
+    def save_crop(self, disp_selection: Tuple[int, int, int, int], 
+                  save_path: str) -> None:
+        disp_w, disp_h = self.gui.get_display_area_size()
+        disp_selection_rel = (
+                disp_selection[0] / disp_w, disp_selection[1] / disp_h, 
+                disp_selection[2] / disp_w, disp_selection[3] / disp_h)
+        src_left = self.current_view[0] + disp_selection_rel[0] * (self.current_view[2] - self.current_view[0])
+        src_top = self.current_view[1] + disp_selection_rel[1] * (self.current_view[3] - self.current_view[1])
+        src_width = (disp_selection_rel[2] - disp_selection_rel[0]) * (self.current_view[2] - self.current_view[0])
+        src_height = (disp_selection_rel[3] - disp_selection_rel[1]) * (self.current_view[3] - self.current_view[1])
+        cropped_image = self.src_image.extract_area(
+                src_left, src_top, src_width, src_height)
+        cropped_image.write_to_file(save_path)
+
