@@ -1,9 +1,14 @@
-from typing import Tuple, Optional, Union
+from typing import Tuple, Optional, Union, List, Dict
 import pyvips
 import numpy as np
+import math
 
 from .gui import SlideViewer
 from ..utils import resize_image_edge, resize_image_box
+
+# Constants for image downsampling cache
+DS_SCALE = 4  # Downsampling scale factor between cache levels
+MIN_CACHE_IMAGE_SIZE = 1000  # Minimum size (geometric mean) to keep in cache
 
 class ImageHandler:
     def __init__(self) -> None:
@@ -14,6 +19,9 @@ class ImageHandler:
         self.highlight_mode = False
         # Should be a np array corresponding to each tile
         self.highlighted_area = None
+        
+        # Image cache for different resolution levels
+        self.image_cache: List[pyvips.Image] = []
 
     def set_gui(self, gui: SlideViewer) -> None:
         self.gui = gui
@@ -23,6 +31,11 @@ class ImageHandler:
         image: pyvips.Image = pyvips.Image.new_from_file(path)
         self.current_view = (0, 0, image.width, image.height, )
         self.src_image = image
+        
+        # Create downsampled image cache
+        if self.image_cache:
+            del self.image_cache
+        self._create_image_cache()
 
         # Resize the image
         self.show_current_view()
@@ -46,22 +59,96 @@ class ImageHandler:
             # tile array is initialized or not.
             self.highlighted_area = np.zeros((tiles_per_col, tiles_per_row), dtype=np.bool)
 
+    def _create_image_cache(self) -> None:
+        """Create a cache of downsampled images for faster rendering at different zoom levels"""
+        if self.src_image is None:
+            return
+            
+        self.image_cache = [self.src_image]  # Level 0 is the original image
+        
+        current_image = self.src_image
+        current_level = 0
+        
+        # Calculate geometric mean of image dimensions
+        while True:
+            # Create next downsampled level
+            next_width = int(current_image.width / DS_SCALE)
+            next_height = int(current_image.height / DS_SCALE)
+            
+            # Stop if we've reached the minimum size
+            geom_mean = math.sqrt(next_width * next_height)
+                
+            # Create downsampled image
+            downsampled = current_image.resize(1.0/DS_SCALE)
+            self.image_cache.append(downsampled)
+            
+            # Update for next iteration
+            current_image = downsampled
+            current_level += 1
+            if geom_mean < MIN_CACHE_IMAGE_SIZE:
+                break
+            
+        print(f"Created image cache with {len(self.image_cache)} levels")
+
+    def _get_best_cache_level(self, target_width: int, target_height: int) -> int:
+        """Find the best cache level for the requested dimensions"""
+        if not self.image_cache:
+            return 0
+        if target_width == 0 or target_height == 0:
+            # Sometimes the display area is not ready yet
+            return len(self.image_cache) - 1
+            
+        # Calculate the scale factor needed
+        src_width = self.current_view[2] - self.current_view[0]
+        src_height = self.current_view[3] - self.current_view[1]
+        
+        scale_factor = max(src_width / target_width, src_height / target_height)
+        
+        # Find the closest cache level
+        best_level = 0
+        for level in range(len(self.image_cache)):
+            level_scale = DS_SCALE ** level
+            if level_scale <= scale_factor:
+                best_level = level
+            else:
+                break
+                
+        return best_level
 
     def show_current_view(self) -> None:
         if self.src_image is None:
             return
         w, h = self.gui.get_display_area_size()
-        image = self.src_image.extract_area(
-                self.current_view[0], self.current_view[1],
-                self.current_view[2] - self.current_view[0],
-                self.current_view[3] - self.current_view[1])
+        
+        # Find the best cache level for current view
+        cache_level = self._get_best_cache_level(w, h)
+        level_scale = DS_SCALE ** cache_level
+        print(f'Cache level: {cache_level}, scale: {level_scale}')
+        
+        # Calculate coordinates in the cached image
+        cached_left = int(self.current_view[0] / level_scale)
+        cached_top = int(self.current_view[1] / level_scale)
+        cached_width = int((self.current_view[2] - self.current_view[0]) / level_scale)
+        cached_height = int((self.current_view[3] - self.current_view[1]) / level_scale)
+        
+        # Extract area from the cached image
+        cached_image = self.image_cache[cache_level]
+        
+        # Ensure we don't go out of bounds
+        cached_width = min(cached_width, cached_image.width - cached_left)
+        cached_height = min(cached_height, cached_image.height - cached_top)
+        
+        if cached_width <= 0 or cached_height <= 0:
+            return
+            
+        image = cached_image.extract_area(cached_left, cached_top, cached_width, cached_height)
+        
+        # Final resize to exact display dimensions
         self.current_image = resize_image_box(image, w, h)
 
         if self.highlight_mode:
             if self.highlighted_area is None:
                 self._init_highlighted_tiles()
-            print("Drawing highlight overlay")
-            print(self.highlighted_area)
             self.current_image = self._draw_highlight_overlay(self.current_image)
 
         self.gui.show_image(self.current_image)
@@ -69,6 +156,7 @@ class ImageHandler:
                 f"Image: {self.src_image.width}x{self.src_image.height}\n"
                 f"View: {self.current_view[0]} {self.current_view[1]} {self.current_view[2]} {self.current_view[3]}\n"
                 f"View size: {self.current_view[2] - self.current_view[0]}x{self.current_view[3] - self.current_view[1]}\n"
+                f"Cache level: {cache_level}/{len(self.image_cache)-1}\n"
                 f"Display: {w}x{h}"
                 )
 
