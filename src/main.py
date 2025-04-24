@@ -77,7 +77,9 @@ def on_activate(app):
         resize_callback=handler.redraw_image_resize,
         drag_callback=handler.drag,
         highlight_mode_callback=handler.set_highlight_mode,
-        highlight_tile_callback=handler.set_highlight_tile
+        highlight_tile_callback=handler.set_highlight_tile,
+        save_crop_callback=handler.save_crop,
+        get_highlight_tile_callback=handler.get_highlighted_area,
     )
     
     # Set the viewer as the window's child

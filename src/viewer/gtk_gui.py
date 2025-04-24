@@ -17,8 +17,10 @@ class GTKSlideViewer(Gtk.Box):
         select_callback: Callable[[Tuple[int, int, int, int]], None] = None,
         resize_callback: Callable[[], None] = None,
         drag_callback: Callable[[Tuple[int, int, int, int]], None] = None,
+        save_crop_callback: Callable[[Tuple[int, int, int, int], str], None] = None,
         highlight_mode_callback: Callable[[bool], None] = None,
-        highlight_tile_callback: Callable[[Tuple[int, int], Optional[bool]], None] = None
+        highlight_tile_callback: Callable[[Tuple[int, int], Optional[bool]], None] = None,
+        get_highlight_tile_callback: Callable[[], np.ndarray] = None,
     ):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         
@@ -31,6 +33,8 @@ class GTKSlideViewer(Gtk.Box):
         self.drag_callback = drag_callback
         self.highlight_mode_callback = highlight_mode_callback
         self.highlight_tile_callback = highlight_tile_callback
+        self.crop_callback = save_crop_callback
+        self.get_highlight_tile_callback = get_highlight_tile_callback
         
         # Create UI components
         self._create_menu_bar()
@@ -43,6 +47,7 @@ class GTKSlideViewer(Gtk.Box):
         self.selection_end = (0, 0)
         self.drag_start = (0, 0)
         self.drag_current = (0, 0)
+        self._crop_pending = False
         
         # Image display state
         self.current_image = None
@@ -75,10 +80,27 @@ class GTKSlideViewer(Gtk.Box):
         zoom_out_button.connect("clicked", self._on_zoom_out_clicked)
         menu_bar.append(zoom_out_button)
         
+        # Crop button
+        crop_button = Gtk.Button(label="Crop")
+        crop_button.connect("clicked", self._on_crop_clicked)
+        menu_bar.append(crop_button)
+        
         # Highlight mode toggle button
         self.highlight_button = Gtk.ToggleButton(label="Highlight Mode")
         self.highlight_button.connect("toggled", self._on_highlight_toggled)
         menu_bar.append(self.highlight_button)
+        
+        # Save highlight coordinates button
+        save_highlight_button = Gtk.Button(label="Save Highlight Coords")
+        save_highlight_button.connect("clicked", self._on_save_highlight_clicked)
+        menu_bar.append(save_highlight_button)
+        
+        # Statistics label
+        self.stats_label = Gtk.Label(label="")
+        self.stats_label.set_hexpand(True)
+        self.stats_label.set_halign(Gtk.Align.END)
+        self.stats_label.set_margin_end(10)
+        menu_bar.append(self.stats_label)
         
         self.append(menu_bar)
     
@@ -204,7 +226,11 @@ class GTKSlideViewer(Gtk.Box):
             x1, y1 = self.selection_start
             x2, y2 = self.selection_end
             if abs(x2 - x1) > 5 and abs(y2 - y1) > 5:
-                if self.select_callback:
+                if self._crop_pending and self.crop_callback:
+                    # Show file save dialog for crop
+                    self._show_save_dialog((x1, y1, x2, y2))
+                    self._crop_pending = False
+                elif self.select_callback:
                     self.select_callback((x1, y1, x2, y2))
             
             # Trigger redraw
@@ -309,6 +335,162 @@ class GTKSlideViewer(Gtk.Box):
 
 
     def show_statistics(self, s: str):
-        '''Dummy method to be implemented
-        '''
-        pass
+        """Display statistics in the menu bar label."""
+        self.stats_label.set_text(s)
+        self.stats_label.set_tooltip_text(s)  # Also set as tooltip for longer text
+
+    def _on_crop_clicked(self, button):
+        """Handle crop button click by enabling selection mode for cropping."""
+        self._crop_pending = True
+        # We don't need to change any UI state as the crop will happen on selection release
+    
+    def _show_save_dialog(self, selection):
+        """Show a file save dialog and save the crop if a path is selected."""
+        dialog = Gtk.FileChooserDialog(
+            title="Save Crop",
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        dialog.add_buttons(
+            "_Cancel", Gtk.ResponseType.CANCEL,
+            "_Save", Gtk.ResponseType.ACCEPT,
+        )
+        
+        # Add filters for image files
+        filter_png = Gtk.FileFilter()
+        filter_png.set_name("PNG files")
+        filter_png.add_pattern("*.png")
+        dialog.add_filter(filter_png)
+        
+        filter_tiff = Gtk.FileFilter()
+        filter_tiff.set_name("TIFF files")
+        filter_tiff.add_pattern("*.tiff")
+        dialog.add_filter(filter_tiff)
+        
+        filter_jpg = Gtk.FileFilter()
+        filter_jpg.set_name("JPEG files")
+        filter_jpg.add_pattern("*.jpg")
+        dialog.add_filter(filter_jpg)
+        
+        filter_all = Gtk.FileFilter()
+        filter_all.set_name("All files")
+        filter_all.add_pattern("*")
+        dialog.add_filter(filter_all)
+        
+        # Set default name
+        dialog.set_current_name("crop.tiff")
+        
+        # Connect response handler with selection data
+        dialog.connect("response", lambda d, r: self._on_save_dialog_response(d, r, selection))
+        dialog.show()
+    
+    def _on_save_dialog_response(self, dialog, response, selection):
+        """Handle the response from the save dialog."""
+        if response == Gtk.ResponseType.ACCEPT:
+            file_path = dialog.get_file().get_path()
+            if self.crop_callback:
+                self.crop_callback(selection, file_path)
+        dialog.destroy()
+
+    def _on_save_highlight_clicked(self, button):
+        """Handle save highlight coordinates button click."""
+        if not self.get_highlight_tile_callback:
+            self._show_error_dialog("No highlight tile callback available")
+            return
+            
+        try:
+            # Try to get the highlighted coordinates
+            highlight_coords = self.get_highlight_tile_callback()
+            if highlight_coords is None or len(highlight_coords) == 0:
+                self._show_error_dialog("No highlighted area available")
+                return
+                
+            # Show save dialog
+            self._show_save_coords_dialog(highlight_coords)
+        except ValueError as e:
+            self._show_error_dialog(f"Highlight data not ready: {str(e)}")
+    
+    def _show_save_coords_dialog(self, coords):
+        """Show a file save dialog for the highlight coordinates."""
+        dialog = Gtk.FileChooserDialog(
+            title="Save Highlight Coordinates",
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        dialog.add_buttons(
+            "_Cancel", Gtk.ResponseType.CANCEL,
+            "_Save", Gtk.ResponseType.ACCEPT,
+        )
+        
+        # Add filters for text and CSV files
+        filter_txt = Gtk.FileFilter()
+        filter_txt.set_name("Text files")
+        filter_txt.add_pattern("*.txt")
+        dialog.add_filter(filter_txt)
+        
+        filter_csv = Gtk.FileFilter()
+        filter_csv.set_name("CSV files")
+        filter_csv.add_pattern("*.csv")
+        dialog.add_filter(filter_csv)
+        
+        filter_all = Gtk.FileFilter()
+        filter_all.set_name("All files")
+        filter_all.add_pattern("*")
+        dialog.add_filter(filter_all)
+        
+        # Set default name
+        dialog.set_current_name("highlight_coords.csv")
+        
+        # Connect response handler with coordinates data
+        dialog.connect("response", lambda d, r: self._on_save_coords_response(d, r, coords))
+        dialog.show()
+    
+    def _on_save_coords_response(self, dialog, response, coords):
+        """Handle the response from the save coordinates dialog."""
+        if response == Gtk.ResponseType.ACCEPT:
+            file_path = dialog.get_file().get_path()
+            try:
+                # Save coordinates to the selected file
+                with open(file_path, 'w') as f:
+                    # If coords is a numpy array, convert to list for easier handling
+                    if hasattr(coords, 'tolist'):
+                        coords = coords.tolist()
+                    
+                    # Write coordinates based on their structure
+                    if isinstance(coords, list):
+                        if all(isinstance(item, (list, tuple)) for item in coords):
+                            # List of coordinates
+                            for coord in coords:
+                                f.write(','.join(map(str, coord)) + '\n')
+                        else:
+                            # Single coordinate
+                            f.write(','.join(map(str, coords)))
+                    else:
+                        # Just convert to string and save
+                        f.write(str(coords))
+                
+                self._show_info_dialog(f"Coordinates saved to {file_path}")
+            except Exception as e:
+                self._show_error_dialog(f"Error saving coordinates: {str(e)}")
+        
+        dialog.destroy()
+    
+    def _show_error_dialog(self, message):
+        """Show an error dialog with the given message."""
+        dialog = Gtk.MessageDialog(
+            transient_for=None,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text=message,
+        )
+        dialog.connect("response", lambda d, r: d.destroy())
+        dialog.show()
+    
+    def _show_info_dialog(self, message):
+        """Show an information dialog with the given message."""
+        dialog = Gtk.MessageDialog(
+            transient_for=None,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK,
+            text=message,
+        )
+        dialog.connect("response", lambda d, r: d.destroy())
+        dialog.show()

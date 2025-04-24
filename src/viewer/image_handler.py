@@ -322,3 +322,17 @@ class ImageHandler:
                 src_left, src_top, src_width, src_height)
         cropped_image.write_to_file(save_path)
 
+
+    def get_highlighted_area(self) -> np.ndarray:
+        '''Get the highlighted area as a numpy array in the format of 
+        [(i, j)]
+        '''
+        if self.highlighted_area is None:
+            raise ValueError("Highlighted area is not initialized. Set highlight mode on first.")
+        res = [ ]
+        for i in range(self.highlighted_area.shape[0]):
+            for j in range(self.highlighted_area.shape[1]):
+                if self.highlighted_area[i, j]:
+                    res.append((i, j))
+
+        return np.array(res)
